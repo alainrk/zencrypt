@@ -1,0 +1,251 @@
+#!/bin/bash
+#########################################################################
+# Author 	: Alain Di Chiappari						
+# Date 		: 28/09/2014							
+# License	: GNU v2 General Public License					
+# Email		: alain [dot] dichiappari [at] gmail [dot] com						
+# Info License	: <http://www.gnu.org/licenses/>
+#########################################################################
+CRYPTED_PASSWD_NAME=Password.gpg
+CONFIG_FOLDER=$HOME/zencrypt
+CRYPTED_PASSWD_FILE=$CONFIG_FOLDER/$CRYPTED_PASSWD_NAME
+TMP_REMOVEME_FILE=$CONFIG_FOLDER/.REMOVEME
+TMP_RESULT_FILE=$CONFIG_FOLDER/.RESULT_REMOVEME
+TRUE=1
+
+function shred_removeme() {
+	echo "Removing REMOVEME uncrypted file"
+	if [[ -e $TMP_REMOVEME_FILE ]]; then
+		shred -uv --random-source=/dev/urandom $TMP_REMOVEME_FILE
+	fi
+	if [[ -e $TMP_RESULT_FILE ]]; then
+		shred -uv --random-source=/dev/urandom $TMP_RESULT_FILE
+	fi
+	return 0
+}
+
+function secure_exit() {
+	zenity --info --title="Secure exiting..." --text="Removing uncrypted file"
+	shred_removeme
+	exit 0
+}
+
+function extract(){
+	
+	gpg --no-tty --yes --output $TMP_REMOVEME_FILE --decrypt $CRYPTED_PASSWD_FILE
+	if [[ $? -ne 0 ]]; then 
+		zenity --error --text="Wrong Password!"
+		exit -1
+	fi
+	
+	ENTRY_TO_SEARCH=`zenity --forms --title="Extract and Search" --text="You can type just a part of the entry to search your datas"  --add-entry="Entry:"`
+	#RESULT=`cat $TMP_REMOVEME_FILE | gawk -v FS='#' -v WORDTOSEARCH="$ENTRY_TO_SEARCH" -v IGNORECASE=1 '{if ($1 ~ WORDTOSEARCH) {print $0}}'` # | sed 's/#/\n/g'`
+	cat $TMP_REMOVEME_FILE | gawk -v FS='#' -v WORDTOSEARCH="$ENTRY_TO_SEARCH" -v IGNORECASE=1 '{if ($1 ~ WORDTOSEARCH) {print $0}}' | sed ':a;N;$!ba;s/\n/\n\n/g' | sed ':a;N;$!ba;s/#/\n/g' > $TMP_RESULT_FILE
+	if [[ -z `cat $TMP_RESULT_FILE` ]]; then 
+		zenity --info --height=100 --title="Warning" --text="No entry found. Retry with another pattern."
+		return 0
+	fi
+
+	cat $TMP_RESULT_FILE
+	zenity --text-info --title="Entries extracted" --filename=$TMP_RESULT_FILE
+	shred_removeme
+	return 0
+}
+
+function newentry(){
+	
+	gpg --no-tty --yes --output $TMP_REMOVEME_FILE --decrypt $CRYPTED_PASSWD_FILE
+	if [[ $? -ne 0 ]]; then 
+		zenity --error --text="Wrong Password!"
+		secure_exit
+	fi
+	
+	RESULT=`zenity --forms --title="Add Entry" \
+	--text="Enter information about your account.\nPlease do not use \"#\" symbol" \
+	--separator="#" \
+	--add-entry="ACCOUNT [req]" \
+	--add-entry="Name" \
+	--add-entry="EMail" \
+	--add-entry="Nick" \
+	--add-entry="Secret Question" \
+	--add-entry="Secret Answer" \
+	--add-entry="Password [req]" \
+	--add-entry="Other Infos"`
+
+	case $? in
+		0)
+			echo $RESULT;;
+		1)
+			echo "No entry added."
+			return 0
+			;;
+		-1)
+			echo "An unexpected error has occurred."
+			return 0;;
+	esac
+	
+	if [[ `echo $RESULT | tr "#" "\n" | wc -l` -ne 8 ]]; then
+		zenity --error --text="Please do not use \"#\" symbol"
+		secure_exit
+	fi
+	
+	IFS='#' read -a FIELD_ARRAY <<< "$RESULT"
+	
+	ACCOUNT=""
+	NAME="NAME:"
+	EMAIL="EMAIL:"
+	NICK="NICK:"
+	QUESTION="QUESTION:"
+	ANSWER="ANSWER:"
+	PASSWORD="PASS:"
+	INFO="INFO:"
+
+	ACCOUNT=${FIELD_ARRAY[0]}
+	NAME+=${FIELD_ARRAY[1]}
+	EMAIL+=${FIELD_ARRAY[2]}
+	NICK+=${FIELD_ARRAY[3]}
+	QUESTION+=${FIELD_ARRAY[4]}
+	ANSWER+=${FIELD_ARRAY[5]}
+	PASSWORD+=${FIELD_ARRAY[6]}
+	INFO+=${FIELD_ARRAY[7]}
+	
+	if [[ -z ${FIELD_ARRAY[0]} || -z ${FIELD_ARRAY[6]} ]]; then 
+		zenity --error --text="Insert all the required fields!"
+		secure_exit
+	fi
+
+	COMPLETE_STRING=$ACCOUNT\#$NAME\#$EMAIL\#$NICK\#$QUESTION\#$ANSWER\#$PASSWORD\#$INFO
+	echo $COMPLETE_STRING >> $TMP_REMOVEME_FILE
+	
+	for i in `seq 1 3`; do
+		
+		zenity --info --height=70 --title="Warning" --text="Insert a password to crypt your Database.\nBeware to insert the SAME password twice!"
+		gpg --no-tty --yes --output $CRYPTED_PASSWD_FILE --symmetric $TMP_REMOVEME_FILE
+		
+		if [[ $? -ne 0 ]]; then 
+			zenity --error --height=70 --text="An error has occurred in crypting.\nInsert the same password."
+		else		
+			zenity --info --height=70 --title="" --text="New account entry successfully added!"
+			shred_removeme
+			break
+		fi
+		shred_removeme
+		if [[ $i -eq 3 ]]; then
+			return 0
+		fi
+	done
+	
+	return 0
+}
+
+
+function modify(){
+	gpg --no-tty --yes --output $TMP_REMOVEME_FILE --decrypt $CRYPTED_PASSWD_FILE
+	if [[ $? -ne 0 ]]; then 
+		zenity --error --text="Wrong Password!"
+		exit -1
+	fi
+	
+	gedit $TMP_REMOVEME_FILE
+	
+	zenity --info --height=70 --title="Warning" --text="Insert a password to crypt your Database.\nBeware to insert the SAME password twice!"
+	gpg --no-tty --yes --output $CRYPTED_PASSWD_FILE --symmetric $TMP_REMOVEME_FILE
+	
+	if [[ $? -ne 0 ]]; then 
+		zenity --error --height=70 --text="An error has occurred in crypting.\nInsert the same password."
+	else		
+		zenity --info --height=70 --title="" --text="Password Database update!"
+	fi
+	shred_removeme
+
+	return 0
+}
+
+
+function backup(){
+	if [[ ! -e $CRYPTED_PASSWD_FILE ]]; then
+		zenity --error --height=70 --text="There is not any Password Database"
+		return -1
+	else
+		FOLDER=`zenity --file-selection \
+				 --title="[Annulla/Cancel] to stop" \
+				 --directory`
+		cp $CRYPTED_PASSWD_FILE $FOLDER
+		if [[ -e $FOLDER/$CRYPTED_PASSWD_NAME ]]; then
+			zenity --info --height=70 --title="" --text="Crypted Password Database successfully backup!"
+		else
+			zenity --error --height=70 --text="An error has occurred in Password Database backup."
+		fi
+	fi
+	return 0
+}
+
+######################## MAIN ##############################
+
+trap secure_exit SIGINT SIGTERM
+
+
+if [[ ! -d $CONFIG_FOLDER ]]; then
+	echo "Creating configuration folder \"$CONFIG_FOLDER\" ..."
+	mkdir $CONFIG_FOLDER
+fi
+
+if [[ ! -e $CRYPTED_PASSWD_FILE ]]; then
+	zenity --info --height=100 --title="Configuration" --text="Password Database does not exist. Creating new one..."
+	echo "Password Database does not exist. Creating new one..."
+	touch $TMP_REMOVEME_FILE
+	gpg --output $CRYPTED_PASSWD_FILE --symmetric $TMP_REMOVEME_FILE
+fi
+
+while [[ $TRUE ]]; do
+
+	CHOICE=`zenity --list \
+					--title="--- ZenCrypt ---" \
+					--text="\tReleased under GPL v.2\n\tAlain Di Chiappari" \
+					--column="Action" \
+					--column="Description" \
+					--width=380 \
+					--height=265 \
+					Extract "Get your password"\
+					New "Add a password" \
+					Modify "Edit password Database" \
+					Backup "Backup password Database" \
+					Exit "Quit the program"`
+
+	if [[ $? -eq 1 || $CHOICE = Exit || $? -eq -1 ]]; then
+		shred_removeme
+		exit 1
+	fi
+
+	case "$CHOICE" in
+
+	# --------------------------------------------------
+	Extract)
+		extract
+	;;
+
+	# --------------------------------------------------
+	New)
+		newentry
+	;;
+
+	# --------------------------------------------------
+	Modify)
+		modify
+	;;
+
+	# --------------------------------------------------
+	Backup)
+		backup
+	;;
+
+	# --------------------------------------------------
+	Exit)
+		exit 0
+	;;
+
+	esac
+
+done
+
+exit 0
